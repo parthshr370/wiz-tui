@@ -25,6 +25,9 @@ type Known struct {
 type Store struct {
 	Default string           `json:"default,omitempty"` // MAC of the bulb commands target
 	Bulbs   map[string]Known `json:"bulbs"`             // keyed by MAC
+	// Favourites are preset keys for the TUI's first tab, in order. nil means
+	// never edited, so the built-in picks apply.
+	Favourites []string `json:"favourites"`
 }
 
 // Dir is ~/.config/wiz, or $WIZ_CONFIG_DIR when set.

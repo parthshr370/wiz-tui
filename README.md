@@ -41,7 +41,7 @@ you pick one of these:
 
 ## The interactive screen
 
-![Browsing scenes](docs/scenes.png)
+![Favourites](docs/favourites.png)
 
 `wiz` opens a preset browser. Moving around only changes the glowing bulb on
 the left, which eases to each colour as you land on it; **enter** sends it to
@@ -49,8 +49,14 @@ the light. The card shows what you are previewing, the brightness enter will
 use, and what the light is doing **now**; the badge says `⏎ enter to apply`
 until they match, then `✓ live`.
 
-Five tabs, all wrapping, so you can just keep circling:
+Six tabs, all wrapping, so you can just keep circling. `wiz` always opens on
+the first:
 
+- **Favourites**: your own short list. It starts as Warm, Bedtime,
+  Candlelight, Ember, Night light, Cozy, Dim-to-warm, Relax, Fireplace, Golden
+  white, Daylight and Focus. `f` on any preset in any tab, Custom included,
+  pins it here; `f` on the Favourites tab unpins it. Pinned presets show `◆`
+  in the other tabs. The list is saved in `~/.config/wiz/bulbs.json`.
 - **Colours**: 24, opening with the dark-hearth omp theme (Ember, Herdr red,
   Hearth gold, Aqua, Teal, Rose, Violet, Sea blue) then a full hue sweep.
 - **Moods**: the WiZ app's own lights, warm to bright: Bedtime, Night light,
@@ -79,6 +85,8 @@ A few moods behave in their own way, and the screen says so:
 the light dims in steps to its lowest level, then turns off. It runs inside
 `wiz`, so keep the screen open; `space` or turning the light off cancels it.
 
+![Browsing scenes](docs/scenes.png)
+
 ![Custom colour](docs/custom.png)
 
 The preset the light is showing is marked `◉`. The screen re-reads the light
@@ -96,6 +104,7 @@ screen lands the cursor on whatever is live.
 | `space` | on or off, straight away |
 | `esc` | jump back to what is live |
 | `z` | surprise me: a random preset in this tab |
+| `f` | pin to Favourites, or unpin on that tab |
 | `t` | sleep timer: 15, 30, 60 minutes, off |
 | `b` | next light |
 | `n` | name this light |

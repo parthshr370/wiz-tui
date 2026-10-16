@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"slices"
 	"time"
 
 	"charm.land/bubbles/v2/help"
@@ -38,7 +39,8 @@ var sleepChoices = []time.Duration{15 * time.Minute, 30 * time.Minute, 60 * time
 type section int
 
 const (
-	sectionColors section = iota
+	sectionFavourites section = iota
+	sectionColors
 	sectionMoods
 	sectionWhites
 	sectionScenes
@@ -47,7 +49,7 @@ const (
 )
 
 func (s section) String() string {
-	return [...]string{"Colours", "Moods", "Whites", "Scenes", "Custom"}[s]
+	return [...]string{"Favourites", "Colours", "Moods", "Whites", "Scenes", "Custom"}[s]
 }
 
 // sleepTimer fades the light down to the lowest brightness, then turns it
@@ -166,7 +168,8 @@ func New(client wiz.Client, store config.Store) Model {
 		toast:   "looking for your lights…",
 		columns: 4,
 	}
-	m.sections = [sectionCount][]item{colorItems, moodItems(), whiteItems, sceneItems(), nil}
+	m.sections = [sectionCount][]item{nil, colorItems, moodItems(), whiteItems, sceneItems(), nil}
+	m.sections[sectionFavourites] = m.loadFavourites()
 	return m
 }
 
@@ -322,27 +325,79 @@ func (m *Model) applyCmd(change wiz.Change, label string) tea.Cmd {
 }
 
 // placeCursorOnLive moves every section's cursor to the preset the light is
-// showing, and opens that section.
-func (m *Model) placeCursorOnLive(state wiz.State) {
+// showing. With open it also switches to the first tab holding it, so
+// Favourites wins; a colour in no tab opens Custom.
+func (m *Model) placeCursorOnLive(state wiz.State, open bool) {
 	if state.Dimming > 0 {
 		m.dim = state.Dimming
 	}
 	if state.Speed > 0 {
 		m.speed = state.Speed
 	}
+	liveIn := sectionCount
 	for s := range sectionCustom {
 		for i, each := range m.sections[s] {
 			if each.matches(state) {
-				m.cursor[s], m.section = i, s
+				m.cursor[s] = i
+				liveIn = min(liveIn, s)
 			}
 		}
 	}
 	if state.Mode() == wiz.ModeColor {
 		r, g, b := state.RGB()
 		m.hue, m.sat = rgbToHS(rgb{r, g, b})
-		if !m.selected().matches(state) {
-			m.section = sectionCustom
+	}
+	switch {
+	case !open:
+	case liveIn != sectionCount:
+		m.section = liveIn
+	case state.Mode() == wiz.ModeColor:
+		m.section = sectionCustom
+	}
+}
+
+// loadFavourites resolves the stored favourites, falling back to the
+// built-in picks when none are stored or none still resolve.
+func (m Model) loadFavourites() []item {
+	others := m.sections[sectionColors:sectionCustom]
+	if items := favouriteItems(m.store.Favourites, others...); len(items) > 0 {
+		return items
+	}
+	return favouriteItems(defaultFavourites, others...)
+}
+
+func (m Model) isFavourite(it item) bool {
+	return slices.ContainsFunc(m.sections[sectionFavourites], func(each item) bool { return each.key() == it.key() })
+}
+
+// toggleFavourite pins the selected preset to Favourites, or unpins it, and
+// saves. The last favourite stays, so the first tab is never empty.
+func (m *Model) toggleFavourite() {
+	selected := m.selected()
+	favourites := m.sections[sectionFavourites]
+	at := slices.IndexFunc(favourites, func(it item) bool { return it.key() == selected.key() })
+	switch {
+	case at < 0:
+		favourites = append(slices.Clip(favourites), selected)
+		if m.section == sectionCustom {
+			favourites[len(favourites)-1].name = hex(selected.color)
 		}
+		m.say("added "+favourites[len(favourites)-1].name+" to favourites", false)
+	case len(favourites) == 1:
+		m.say("keep at least one favourite", true)
+		return
+	default:
+		m.say("removed "+selected.name+" from favourites", false)
+		favourites = slices.Delete(slices.Clone(favourites), at, at+1)
+		m.cursor[sectionFavourites] = min(m.cursor[sectionFavourites], len(favourites)-1)
+	}
+	m.sections[sectionFavourites] = favourites
+	m.store.Favourites = make([]string, 0, len(favourites))
+	for _, it := range favourites {
+		m.store.Favourites = append(m.store.Favourites, it.key())
+	}
+	if err := m.store.Save(); err != nil {
+		m.say(err.Error(), true)
 	}
 }
 
@@ -415,7 +470,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		m.online, m.state = true, msg.state
 		if !m.synced {
 			m.synced = true
-			m.placeCursorOnLive(msg.state)
+			m.placeCursorOnLive(msg.state, false)
 		}
 		return m, nil
 
@@ -564,8 +619,10 @@ func (m Model) updateKeys(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		}
 	case matches(msg, k.Revert):
 		if m.online {
-			m.placeCursorOnLive(m.state)
+			m.placeCursorOnLive(m.state, true)
 		}
+	case matches(msg, k.Favourite):
+		m.toggleFavourite()
 	}
 	if _, ok := m.bulb(); !ok {
 		return m, nil

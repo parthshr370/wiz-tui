@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"fmt"
 	"math"
 	"slices"
+	"strings"
 
 	"github.com/parthshr370/wiz-tui/internal/wiz"
 )
@@ -59,6 +61,55 @@ func (it item) matches(state wiz.State) bool {
 		r, g, b := state.RGB()
 		return state.Mode() == wiz.ModeColor && rgb{r, g, b} == it.color
 	}
+}
+
+// key names an item in bulbs.json: "colour:#fe8019", "white:2700", "scene:10".
+func (it item) key() string {
+	switch it.kind {
+	case kindWhite:
+		return fmt.Sprintf("white:%d", it.kelvin)
+	case kindScene:
+		return fmt.Sprintf("scene:%d", it.scene.ID)
+	default:
+		return "colour:" + hex(it.color)
+	}
+}
+
+// defaultFavourites are the first tab until the user pins or unpins anything.
+var defaultFavourites = []string{
+	"white:2700", "scene:10", "scene:29", "colour:#fe8019",
+	"scene:14", "scene:6", "scene:40", "scene:16",
+	"scene:5", "scene:30", "scene:12", "scene:15",
+}
+
+// favouriteItems turns stored keys into items, looking them up in the other
+// tabs. A colour that is in no tab came from Custom and is named by its hex.
+// Keys that match nothing (a hand-edited file) are skipped.
+func favouriteItems(keys []string, tabs ...[]item) []item {
+	var items []item
+	for _, key := range keys {
+		if it, ok := lookupItem(key, tabs); ok {
+			items = append(items, it)
+		}
+	}
+	return items
+}
+
+func lookupItem(key string, tabs [][]item) (item, bool) {
+	for _, tab := range tabs {
+		for _, it := range tab {
+			if it.key() == key {
+				return it, true
+			}
+		}
+	}
+	if text, ok := strings.CutPrefix(key, "colour:"); ok {
+		if r, g, b, err := wiz.ParseColor(text); err == nil {
+			c := rgb{r, g, b}
+			return item{name: hex(c), color: c}, true
+		}
+	}
+	return item{}, false
 }
 
 // Colours open with the dark-hearth omp theme palette, then a full hue sweep.

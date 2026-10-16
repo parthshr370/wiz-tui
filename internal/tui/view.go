@@ -311,8 +311,15 @@ func (m Model) viewBrowser(width int) string {
 			parts = append(parts, "", styleDim.Render("changes over many minutes · its pace is set in the WiZ app"))
 		}
 	}
-	if m.section == sectionMoods && m.sleep.at.IsZero() {
-		parts = append(parts, "", styleDim.Render("t  sleep timer: dims the light bit by bit, then turns it off"))
+	var hints []string
+	if m.section == sectionFavourites {
+		hints = append(hints, "f  on a preset in any tab pins it here; f here unpins it")
+	}
+	if (m.section == sectionFavourites || m.section == sectionMoods) && m.sleep.at.IsZero() {
+		hints = append(hints, "t  sleep timer: dims the light bit by bit, then turns it off")
+	}
+	if len(hints) > 0 {
+		parts = append(parts, "", styleDim.Render(strings.Join(hints, "\n")))
 	}
 	return lipgloss.NewStyle().Width(width).Render(strings.Join(parts, "\n"))
 }
@@ -337,8 +344,11 @@ func (m Model) viewChip(it item, focused bool) string {
 	name := ansi.Truncate(it.name, chipWidth-6, "…")
 	nameWidth := chipWidth - 6
 	marker := " "
-	if isLive {
+	switch {
+	case isLive:
 		marker = "◉"
+	case m.section != sectionFavourites && m.isFavourite(it):
+		marker = "◆"
 	}
 	base := lipgloss.NewStyle()
 	nameStyle := styleAsh
