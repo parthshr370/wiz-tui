@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"image/color"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/help"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/parthshr370/wiz-tui/internal/wiz"
 )
@@ -37,6 +39,7 @@ var (
 	styleGreen  = lipgloss.NewStyle().Foreground(colGreen)
 	styleRed    = lipgloss.NewStyle().Foreground(colRed)
 	styleOrange = lipgloss.NewStyle().Foreground(colOrange)
+	styleGold   = lipgloss.NewStyle().Foreground(colGold)
 )
 
 const (
@@ -179,10 +182,10 @@ func (m Model) describe(it item) string {
 	case kindWhite:
 		return fmt.Sprintf("white · %d K", it.kelvin)
 	case kindScene:
-		if it.scene.Dynamic {
-			return "scene · animated"
+		if it.scene.ID == dimToWarmScene {
+			return fmt.Sprintf("warmer as it dims · %d K", dimToWarmKelvin(m.dim))
 		}
-		return "scene · steady"
+		return it.scene.About
 	default:
 		return "colour · " + hex(it.color)
 	}
@@ -219,6 +222,31 @@ func (m Model) liveSummary() string {
 	return dot(live, fmt.Sprintf("%s %d%%", hex(live), m.state.Dimming))
 }
 
+// viewBrightness is the card's brightness row, or a note for the scenes that
+// set their own.
+func (m Model) viewBrightness(selected item, swatch rgb, inner int) string {
+	bg := lipgloss.NewStyle().Background(colHearth).Width(inner)
+	if selected.kind == kindScene && !selected.scene.Dimming {
+		return bg.Render(styleDim.Background(colHearth).Render("◉ fixed brightness"))
+	}
+	return bg.Render(styleOrange.Background(colHearth).Render("◉ ") +
+		meter(m.dim, 0, wiz.MaxDimming, inner-8, swatch, colHearth) +
+		styleFg.Background(colHearth).Render(fmt.Sprintf(" %3d%%", m.dim)))
+}
+
+// viewSleep is the card's sleep-timer row: empty until t arms it.
+func (m Model) viewSleep() string {
+	if m.sleep.at.IsZero() {
+		return ""
+	}
+	left := time.Until(m.sleep.at).Round(time.Minute)
+	text := fmt.Sprintf("zZ off in %d min", int(left.Minutes()))
+	if left < time.Minute {
+		text = "zZ off in under a minute"
+	}
+	return styleGold.Background(colHearth).Render(text) + styleDim.Background(colHearth).Render(" · t")
+}
+
 func (m Model) viewCard() string {
 	selected := m.selected()
 	swatch := selected.swatch()
@@ -241,10 +269,9 @@ func (m Model) viewCard() string {
 		line(colorOf(readable(swatch)).Background(colHearth).Bold(true).Render(selected.name)),
 		line(styleGray.Background(colHearth).Render(m.describe(selected))),
 		line(""),
-		line(styleOrange.Background(colHearth).Render("◐ ") +
-			meter(m.dim, 0, wiz.MaxDimming, inner-8, swatch, colHearth) +
-			styleFg.Background(colHearth).Render(fmt.Sprintf(" %3d%%", m.dim))),
+		m.viewBrightness(selected, swatch, inner),
 		line(styleDim.Background(colHearth).Render("now ") + m.liveSummary()),
+		line(m.viewSleep()),
 		line(""),
 		line(status),
 	}
@@ -274,10 +301,18 @@ func (m Model) viewBrowser(width int) string {
 	} else {
 		parts = append(parts, m.viewGrid())
 	}
-	if selected := m.selected(); selected.kind == kindScene && selected.scene.Dynamic {
-		parts = append(parts, "", styleGray.Render("speed ")+
-			meter(m.speed, wiz.MinSpeed, wiz.MaxSpeed, 20, selected.color, lipgloss.NoColor{})+
-			styleFg.Render(fmt.Sprintf(" %d%%", m.speed))+styleDim.Render("   , slower  . faster"))
+	if selected := m.selected(); selected.kind == kindScene {
+		switch {
+		case selected.scene.Speed:
+			parts = append(parts, "", styleGray.Render("speed ")+
+				meter(m.speed, wiz.MinSpeed, wiz.MaxSpeed, 20, selected.color, lipgloss.NoColor{})+
+				styleFg.Render(fmt.Sprintf(" %d%%", m.speed))+styleDim.Render("   , slower  . faster"))
+		case selected.scene.Kind == wiz.SceneProgressive:
+			parts = append(parts, "", styleDim.Render("changes over many minutes · its pace is set in the WiZ app"))
+		}
+	}
+	if m.section == sectionMoods && m.sleep.at.IsZero() {
+		parts = append(parts, "", styleDim.Render("t  sleep timer: dims the light bit by bit, then turns it off"))
 	}
 	return lipgloss.NewStyle().Width(width).Render(strings.Join(parts, "\n"))
 }
@@ -299,11 +334,8 @@ func (m Model) viewGrid() string {
 
 func (m Model) viewChip(it item, focused bool) string {
 	isLive := m.state.On && it.matches(m.state)
-	name := it.name
+	name := ansi.Truncate(it.name, chipWidth-6, "…")
 	nameWidth := chipWidth - 6
-	if lipgloss.Width(name) > nameWidth {
-		name = name[:nameWidth-1] + "…"
-	}
 	marker := " "
 	if isLive {
 		marker = "◉"

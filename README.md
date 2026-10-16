@@ -49,14 +49,35 @@ the light. The card shows what you are previewing, the brightness enter will
 use, and what the light is doing **now**; the badge says `⏎ enter to apply`
 until they match, then `✓ live`.
 
-Four tabs, all wrapping, so you can just keep circling:
+Five tabs, all wrapping, so you can just keep circling:
 
 - **Colours**: 24, opening with the dark-hearth omp theme (Ember, Herdr red,
   Hearth gold, Aqua, Teal, Rose, Violet, Sea blue) then a full hue sweep.
+- **Moods**: the WiZ app's own lights, warm to bright: Bedtime, Night light,
+  Candlelight, Cozy, Dim-to-warm, Relax, TV time, Warm white, Golden white,
+  Soft white, White, Daylight, Crisp white, Cool white, Focus, True colours,
+  Plant growth and Wake up.
 - **Whites**: Candle 2200 K up to Cool 6500 K.
-- **Scenes**: all 36 built-in scenes, each with a mood swatch. Animated ones
+- **Scenes**: the 21 animated colour scenes, each with a mood swatch. They
   make the preview bulb breathe, and `,` `.` set their speed.
 - **Custom**: a rainbow hue slider and a saturation slider for any colour.
+
+![Moods](docs/moods.png)
+
+A few moods behave in their own way, and the screen says so:
+
+- **Bedtime** and **Wake up** change over many minutes, on the bulb itself.
+  Their pace is set in the WiZ app; nothing on the local network can change it.
+- **Night light**, **Wake up** and **Alarm** set their own brightness, so
+  `+`/`-` do nothing there.
+- **Dim-to-warm** acts like an old bulb: lower brightness is warmer, from
+  1800 K at 10% up to 4200 K at 90%, as the bulb reports it.
+- **Soft white** (3500 K) and **Crisp white** (5000 K) are built-in scenes 38
+  and 39. The WiZ app hides them, so the names are ours.
+
+**Sleep timer.** `t` sets it to 15, 30 or 60 minutes, then off. Over that time
+the light dims in steps to its lowest level, then turns off. It runs inside
+`wiz`, so keep the screen open; `space` or turning the light off cancels it.
 
 ![Custom colour](docs/custom.png)
 
@@ -75,6 +96,7 @@ screen lands the cursor on whatever is live.
 | `space` | on or off, straight away |
 | `esc` | jump back to what is live |
 | `z` | surprise me: a random preset in this tab |
+| `t` | sleep timer: 15, 30, 60 minutes, off |
 | `b` | next light |
 | `n` | name this light |
 | `d` | scan the network again |

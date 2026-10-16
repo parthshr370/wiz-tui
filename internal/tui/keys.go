@@ -10,7 +10,7 @@ type keyMap struct {
 	NextSection, PrevSection       key.Binding
 	Apply, Power, Revert, Surprise key.Binding
 	Brighter, Dimmer               key.Binding
-	Faster, Slower                 key.Binding
+	Faster, Slower, Sleep          key.Binding
 	NextBulb, Rename, Rescan       key.Binding
 	Help, Quit                     key.Binding
 }
@@ -34,6 +34,7 @@ func defaultKeys() keyMap {
 		Dimmer:      bind("-", "dimmer", "-", "_", "["),
 		Faster:      bind(".", "scene faster", ".", ">"),
 		Slower:      bind(",", "scene slower", ",", "<"),
+		Sleep:       bind("t", "sleep timer", "t"),
 		NextBulb:    bind("b", "next light", "b"),
 		Rename:      bind("n", "name this light", "n"),
 		Rescan:      bind("d", "scan network", "d"),
@@ -55,8 +56,8 @@ func (k keyMap) ShortHelp() []key.Binding {
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Left, k.Right, k.Up, k.Down, k.NextSection, k.PrevSection},
-		{k.Apply, k.Power, k.Revert, k.Surprise, k.Brighter, k.Dimmer},
+		{k.Left, k.Right, k.Up, k.Down, k.NextSection, k.PrevSection, k.Help},
+		{k.Apply, k.Power, k.Revert, k.Surprise, k.Brighter, k.Dimmer, k.Sleep},
 		{k.Faster, k.Slower, k.NextBulb, k.Rename, k.Rescan, k.Quit},
 	}
 }

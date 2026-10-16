@@ -2,6 +2,7 @@ package tui
 
 import (
 	"math"
+	"slices"
 
 	"github.com/parthshr370/wiz-tui/internal/wiz"
 )
@@ -104,21 +105,62 @@ var whiteItems = []item{
 var sceneMood = map[int]rgb{
 	1: {0, 120, 255}, 2: {255, 40, 90}, 3: {255, 110, 40}, 4: {200, 0, 255},
 	5: {255, 90, 10}, 6: {255, 140, 60}, 7: {40, 200, 60}, 8: {255, 170, 220},
-	9: {255, 190, 120}, 10: {255, 120, 40}, 11: {255, 167, 87}, 12: {255, 228, 206},
-	13: {255, 254, 250}, 14: {255, 100, 20}, 15: {255, 238, 227}, 16: {255, 180, 110},
+	9: {255, 190, 120}, 10: {255, 120, 40}, 11: {255, 167, 87}, 12: {255, 216, 182},
+	13: {255, 249, 253}, 14: {255, 100, 20}, 15: {255, 238, 227}, 16: {255, 180, 110},
 	17: {255, 209, 163}, 18: {90, 90, 255}, 19: {255, 0, 200}, 20: {120, 255, 120},
 	21: {255, 220, 60}, 22: {230, 100, 20}, 23: {0, 60, 200}, 24: {0, 180, 80},
 	25: {120, 255, 170}, 26: {255, 0, 160}, 27: {255, 30, 30}, 28: {255, 90, 0},
 	29: {255, 130, 30}, 30: {255, 190, 110}, 31: {220, 220, 255}, 32: {200, 120, 40},
-	33: {255, 150, 0}, 34: {255, 220, 190}, 35: {255, 0, 0}, 36: {180, 220, 255},
+	33: {255, 150, 0}, 34: {255, 209, 163}, 35: {255, 0, 0}, 36: {180, 220, 255},
+	38: {255, 196, 137}, 39: {255, 228, 206}, dimToWarmScene: {255, 167, 87},
 }
 
-func sceneItems() []item {
-	items := make([]item, 0, len(wiz.Scenes))
-	for _, scene := range wiz.Scenes {
-		items = append(items, item{name: scene.Name, kind: kindScene, scene: scene, color: sceneMood[scene.ID]})
+// Moods are the WiZ app's whites, everyday lights and the two slow ones, warm
+// to bright, so bedtime light sits at the start of the row.
+var moodOrder = []int{10, 14, 29, 6, dimToWarmScene, 16, 18, 11, 30, 38, 34, 12, 39, 13, 15, 17, 19, 9}
+
+// dimToWarmScene follows the bulb's dim-to-warm curve, so its preview does too.
+const dimToWarmScene = 40
+
+func sceneItem(scene wiz.Scene) item {
+	return item{name: scene.Name, kind: kindScene, scene: scene, color: sceneMood[scene.ID]}
+}
+
+// moodItems panics on an id missing from wiz.Scenes: moodOrder is a constant
+// table, so that is a typo caught on the first run.
+func moodItems() []item {
+	items := make([]item, 0, len(moodOrder))
+	for _, id := range moodOrder {
+		items = append(items, sceneItem(wiz.Scenes[wiz.SceneIndex(id)]))
 	}
 	return items
+}
+
+// sceneItems are the animated colour scenes, the ones Moods leaves out.
+func sceneItems() []item {
+	var items []item
+	for _, scene := range wiz.Scenes {
+		if !slices.Contains(moodOrder, scene.ID) {
+			items = append(items, sceneItem(scene))
+		}
+	}
+	return items
+}
+
+// dimToWarmKelvin is the colour temperature Dim-to-warm runs at a brightness,
+// read off the curve the bulb reports in getUserConfig (dim2WarmPoints).
+func dimToWarmKelvin(dimming int) int {
+	points := [][2]int{{10, 1800}, {50, 2700}, {90, 4200}}
+	if dimming <= points[0][0] {
+		return points[0][1]
+	}
+	for i := 1; i < len(points); i++ {
+		low, high := points[i-1], points[i]
+		if dimming <= high[0] {
+			return low[1] + (high[1]-low[1])*(dimming-low[0])/(high[0]-low[0])
+		}
+	}
+	return points[len(points)-1][1]
 }
 
 // hsvToRGB converts hue (0-360) and saturation (0-1) at full value.

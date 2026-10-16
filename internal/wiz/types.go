@@ -105,11 +105,15 @@ func Color(r, g, b, dimming int) Change {
 	return Change{On: new(true), R: new(r), G: new(g), B: new(b), C: new(0), W: new(0), Dimming: dimming}
 }
 
-// SceneChange starts a built-in scene. speed is sent only for dynamic scenes.
+// SceneChange starts a built-in scene. speed and dimming are sent only to the
+// scenes that use them; the light accepts the others and silently drops them.
 func SceneChange(scene Scene, speed, dimming int) Change {
-	change := Change{On: new(true), SceneID: scene.ID, Dimming: dimming}
-	if scene.Dynamic {
+	change := Change{On: new(true), SceneID: scene.ID}
+	if scene.Speed {
 		change.Speed = speed
+	}
+	if scene.Dimming {
+		change.Dimming = dimming
 	}
 	return change
 }
@@ -117,24 +121,87 @@ func SceneChange(scene Scene, speed, dimming int) Change {
 // Dim changes brightness only.
 func Dim(dimming int) Change { return Change{On: new(true), Dimming: dimming} }
 
-// Scene is a built-in WiZ light mode. Dynamic scenes animate and take a speed.
+// SceneKind is how the WiZ app groups a scene.
+type SceneKind int
+
+const (
+	SceneWhite       SceneKind = iota // a still white
+	SceneFunctional                   // a still light for a purpose: reading, TV, sleep
+	SceneProgressive                  // changes over minutes at a pace set in the WiZ app
+	SceneDynamic                      // a colour animation
+)
+
+// Scene is a built-in WiZ light mode.
 type Scene struct {
 	ID      int
 	Name    string
-	Dynamic bool
+	Kind    SceneKind
+	Speed   bool   // takes a speed
+	Dimming bool   // takes a brightness; false ones drive their own
+	About   string // one line on what it does
+}
+
+// Animates reports whether the light moves on its own while the scene runs.
+func (s Scene) Animates() bool { return s.Kind == SceneDynamic || s.Kind == SceneProgressive }
+
+func white(id int, name, about string) Scene {
+	return Scene{ID: id, Name: name, Kind: SceneWhite, Dimming: true, About: about}
+}
+
+func still(id int, name, about string) Scene {
+	return Scene{ID: id, Name: name, Kind: SceneFunctional, Dimming: true, About: about}
+}
+
+func paced(id int, name, about string) Scene {
+	return Scene{ID: id, Name: name, Kind: SceneDynamic, Speed: true, Dimming: true, About: about}
 }
 
 // Scenes lists the built-in scenes, ids as the firmware numbers them.
+//
+// Behaviour follows measurements on an ESP25_SHRGB_01 at firmware 1.38.0 (the
+// wizlight crate's scene table), which corrects WiZ's published table: Cozy
+// holds still, Candlelight and Alarm take no speed, Wake up, Night light and
+// Alarm ignore brightness, and 38 to 40 exist although the app hides 38 and 39.
 var Scenes = []Scene{
-	{1, "Ocean", true}, {2, "Romance", true}, {3, "Sunset", true}, {4, "Party", true},
-	{5, "Fireplace", true}, {6, "Cozy", true}, {7, "Forest", true}, {8, "Pastel colours", true},
-	{9, "Wake up", true}, {10, "Bedtime", true}, {11, "Warm white", false}, {12, "Daylight", false},
-	{13, "Cool white", false}, {14, "Night light", false}, {15, "Focus", false}, {16, "Relax", false},
-	{17, "True colours", false}, {18, "TV time", false}, {19, "Plant growth", false}, {20, "Spring", true},
-	{21, "Summer", true}, {22, "Fall", true}, {23, "Deep dive", true}, {24, "Jungle", true},
-	{25, "Mojito", true}, {26, "Club", true}, {27, "Christmas", true}, {28, "Halloween", true},
-	{29, "Candlelight", true}, {30, "Golden white", false}, {31, "Pulse", true}, {32, "Steampunk", true},
-	{33, "Diwali", true}, {34, "White", false}, {35, "Alarm", true}, {36, "Snowy sky", true},
+	paced(1, "Ocean", "blues and greens rolling"),
+	paced(2, "Romance", "slow reds and pinks"),
+	paced(3, "Sunset", "orange into red"),
+	paced(4, "Party", "fast colour changes"),
+	paced(5, "Fireplace", "flickering orange"),
+	still(6, "Cozy", "warm amber, still"),
+	paced(7, "Forest", "greens and yellows"),
+	paced(8, "Pastel colours", "soft pastel drift"),
+	{ID: 9, Name: "Wake up", Kind: SceneProgressive, About: "a slow sunrise"},
+	{ID: 10, Name: "Bedtime", Kind: SceneProgressive, Dimming: true, About: "dims slowly into sleep"},
+	white(11, "Warm white", "2700 K"),
+	white(12, "Daylight", "4200 K"),
+	white(13, "Cool white", "6500 K"),
+	{ID: 14, Name: "Night light", Kind: SceneFunctional, About: "a very dim warm glow"},
+	still(15, "Focus", "bright and crisp, for work"),
+	still(16, "Relax", "soft and warm"),
+	still(17, "True colours", "full-spectrum white"),
+	still(18, "TV time", "low light for screens"),
+	still(19, "Plant growth", "red and blue for plants"),
+	paced(20, "Spring", "fresh greens"),
+	paced(21, "Summer", "warm yellows"),
+	paced(22, "Fall", "oranges and browns"),
+	paced(23, "Deep dive", "deep blues"),
+	paced(24, "Jungle", "lush greens"),
+	paced(25, "Mojito", "lime and mint"),
+	paced(26, "Club", "strobing colours"),
+	paced(27, "Christmas", "red and green"),
+	paced(28, "Halloween", "orange and purple"),
+	{ID: 29, Name: "Candlelight", Kind: SceneDynamic, Dimming: true, About: "flickers like a candle"},
+	paced(30, "Golden white", "a slow golden drift"),
+	paced(31, "Pulse", "white breathing"),
+	paced(32, "Steampunk", "copper and amber"),
+	paced(33, "Diwali", "festive warm colours"),
+	white(34, "White", "4000 K"),
+	{ID: 35, Name: "Alarm", Kind: SceneDynamic, About: "flashing red"},
+	paced(36, "Snowy sky", "icy blues"),
+	white(38, "Soft white", "3500 K"),
+	white(39, "Crisp white", "5000 K"),
+	white(40, "Dim-to-warm", "gets warmer as it dims"),
 }
 
 // SceneIndex returns the position of a scene id in Scenes, or -1.
@@ -155,7 +222,7 @@ func FindScene(query string) (Scene, bool) {
 		}
 		return Scene{}, false
 	}
-	normalize := func(s string) string { return strings.ToLower(strings.ReplaceAll(s, " ", "")) }
+	normalize := func(s string) string { return strings.ToLower(strings.NewReplacer(" ", "", "-", "").Replace(s)) }
 	for _, scene := range Scenes {
 		if normalize(scene.Name) == normalize(query) {
 			return scene, true

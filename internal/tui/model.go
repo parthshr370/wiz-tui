@@ -1,8 +1,8 @@
 // Package tui is the interactive Bubble Tea screen for WiZ lights.
 //
-// The screen is a preset browser: moving through colours, whites and scenes
-// only changes the on-screen preview. Enter sends the highlighted preset to
-// the light; space switches it on or off straight away.
+// The screen is a preset browser: moving through colours, moods, whites and
+// scenes only changes the on-screen preview. Enter sends the highlighted
+// preset to the light; space switches it on or off straight away.
 package tui
 
 import (
@@ -29,12 +29,17 @@ const (
 	speedStep      = 20
 	hueStep        = 6
 	satStep        = 0.05
+	sleepFadeStep  = 5 // smallest brightness drop the sleep timer sends
 )
+
+// sleepChoices are what t cycles through; past the last one the timer is off.
+var sleepChoices = []time.Duration{15 * time.Minute, 30 * time.Minute, 60 * time.Minute}
 
 type section int
 
 const (
 	sectionColors section = iota
+	sectionMoods
 	sectionWhites
 	sectionScenes
 	sectionCustom
@@ -42,7 +47,31 @@ const (
 )
 
 func (s section) String() string {
-	return [...]string{"Colours", "Whites", "Scenes", "Custom"}[s]
+	return [...]string{"Colours", "Moods", "Whites", "Scenes", "Custom"}[s]
+}
+
+// sleepTimer fades the light down to the lowest brightness, then turns it
+// off at `at`. It runs in this screen, so it stops if wiz is closed.
+type sleepTimer struct {
+	at    time.Time
+	total time.Duration
+	from  int // brightness when the timer started
+}
+
+// level is the brightness the fade should have reached by now.
+func (s sleepTimer) level(now time.Time) int {
+	share := math.Max(0, math.Min(1, float64(s.at.Sub(now))/float64(s.total)))
+	return wiz.MinDimming + int(math.Round(float64(s.from-wiz.MinDimming)*share))
+}
+
+// next is the timer t moves to: the next longer choice, then off.
+func (s sleepTimer) next(now time.Time, from int) sleepTimer {
+	for _, choice := range sleepChoices {
+		if choice > s.total {
+			return sleepTimer{at: now.Add(choice), total: choice, from: from}
+		}
+	}
+	return sleepTimer{}
 }
 
 type customRow int
@@ -92,15 +121,15 @@ type Model struct {
 	loading bool
 	busy    bool
 
-	sections [sectionCount][]item
-	section  section
-	cursor   [sectionCount]int
-	custom   customRow
-	hue      float64
-	sat      float64
-	dim      int // brightness the next enter will send
-	speed    int
-
+	sections  [sectionCount][]item
+	section   section
+	cursor    [sectionCount]int
+	custom    customRow
+	hue       float64
+	sat       float64
+	dim       int // brightness the next enter will send
+	speed     int
+	sleep     sleepTimer
 	shown     [3]float64 // preview colour as drawn, easing towards the target
 	animating bool
 	frame     int
@@ -137,7 +166,7 @@ func New(client wiz.Client, store config.Store) Model {
 		toast:   "looking for your lights…",
 		columns: 4,
 	}
-	m.sections = [sectionCount][]item{colorItems, whiteItems, sceneItems(), nil}
+	m.sections = [sectionCount][]item{colorItems, moodItems(), whiteItems, sceneItems(), nil}
 	return m
 }
 
@@ -172,19 +201,63 @@ func (m Model) pending() bool {
 	if !m.online {
 		return false
 	}
-	return !m.state.On || !m.selected().matches(m.state) || m.dim != m.state.Dimming
+	selected := m.selected()
+	dimChanged := m.dim != m.state.Dimming && (selected.kind != kindScene || selected.scene.Dimming)
+	return !m.state.On || !selected.matches(m.state) || dimChanged
 }
 
 // targetColor is what the preview orb eases towards.
 func (m Model) targetColor() rgb {
-	return m.selected().swatch().scale(0.3 + 0.7*float64(m.dim)/100)
+	selected := m.selected()
+	if selected.kind == kindScene {
+		if selected.scene.ID == dimToWarmScene {
+			r, g, b := wiz.KelvinRGB(dimToWarmKelvin(m.dim))
+			return rgb{r, g, b}.scale(0.3 + 0.7*float64(m.dim)/100)
+		}
+		if !selected.scene.Dimming {
+			return selected.swatch()
+		}
+	}
+	return selected.swatch().scale(0.3 + 0.7*float64(m.dim)/100)
 }
 
 func (m Model) lit() bool { return m.state.On || m.pending() }
 
 func (m Model) breathing() bool {
 	selected := m.selected()
-	return selected.kind == kindScene && selected.scene.Dynamic && m.lit()
+	return selected.kind == kindScene && selected.scene.Animates() && m.lit()
+}
+
+// liveTakesDimming is false while the light runs a scene that sets its own
+// brightness, or one this program does not know.
+func (m Model) liveTakesDimming() bool {
+	if m.state.SceneID == 0 {
+		return true
+	}
+	i := wiz.SceneIndex(m.state.SceneID)
+	return i >= 0 && wiz.Scenes[i].Dimming
+}
+
+// tickSleep runs the sleep timer on each poll: off at the end, otherwise one
+// brightness step down once the fade has fallen sleepFadeStep below the light.
+func (m *Model) tickSleep(now time.Time) tea.Cmd {
+	if m.sleep.at.IsZero() || !m.online || m.busy {
+		return nil
+	}
+	if !m.state.On {
+		m.sleep = sleepTimer{}
+		m.say("the light is off, so the sleep timer is cleared", false)
+		return nil
+	}
+	if !now.Before(m.sleep.at) {
+		m.sleep = sleepTimer{}
+		m.state.On = false
+		return m.applyCmd(wiz.Power(false), "sleep timer done, good night")
+	}
+	if level := m.sleep.level(now); m.liveTakesDimming() && m.state.Dimming-level >= sleepFadeStep {
+		return m.applyCmd(wiz.Dim(level), fmt.Sprintf("sleep timer: dimmed to %d%%", level))
+	}
+	return nil
 }
 
 // glow is the halo size; animated scenes breathe.
@@ -351,7 +424,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		if m.busy || m.loading {
 			return m, next
 		}
-		return m, tea.Batch(next, m.statusCmd())
+		return m, tea.Batch(next, m.statusCmd(), m.tickSleep(time.Now()))
 
 	case appliedMsg:
 		m.busy = false
@@ -506,6 +579,7 @@ func (m Model) updateKeys(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		label := fmt.Sprintf("%s at %d%%", selected.name, m.dim)
 		return m, m.applyCmd(selected.change(m.dim, m.speed), label)
 	case matches(msg, k.Power):
+		m.sleep = sleepTimer{}
 		on := !m.state.On
 		label := "light off"
 		if on {
@@ -513,6 +587,18 @@ func (m Model) updateKeys(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		}
 		m.state.On = on
 		return m, m.applyCmd(wiz.Power(on), label)
+	case matches(msg, k.Sleep):
+		if !m.online || !m.state.On {
+			m.say("turn the light on first, then set the sleep timer", true)
+			return m, nil
+		}
+		m.sleep = m.sleep.next(time.Now(), m.state.Dimming)
+		if m.sleep.at.IsZero() {
+			m.say("sleep timer off", false)
+			return m, nil
+		}
+		m.say(fmt.Sprintf("sleep timer: dimming to off over %d min, keep wiz open", int(m.sleep.total.Minutes())), false)
+		return m, nil
 	case matches(msg, k.Rename):
 		bulb, _ := m.bulb()
 		m.inputKind = inputRename

@@ -95,12 +95,9 @@ func run(args []string) error {
 		fmt.Print(usage)
 		return nil
 	case "scenes":
+		kinds := [...]string{"white", "still", "slow", "animated"}
 		for _, scene := range wiz.Scenes {
-			kind := "static"
-			if scene.Dynamic {
-				kind = "animated"
-			}
-			fmt.Printf("%3d  %-15s %s\n", scene.ID, scene.Name, kind)
+			fmt.Printf("%3d  %-15s %-9s %s\n", scene.ID, scene.Name, kinds[scene.Kind], scene.About)
 		}
 		return nil
 	case "list":
