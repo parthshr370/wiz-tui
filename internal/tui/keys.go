@@ -6,54 +6,58 @@ import (
 )
 
 type keyMap struct {
-	Up, Down, Left, Right, BigLeft, BigRight key.Binding
-	Power, NextMode, PrevMode                key.Binding
-	Warm, Cool, Preset, Hex                  key.Binding
-	NextBulb, PrevBulb, Rename, Rescan       key.Binding
-	Refresh, Help, Quit                      key.Binding
+	Left, Right, Up, Down          key.Binding
+	NextSection, PrevSection       key.Binding
+	Apply, Power, Revert, Surprise key.Binding
+	Brighter, Dimmer               key.Binding
+	Faster, Slower                 key.Binding
+	NextBulb, Rename, Rescan       key.Binding
+	Help, Quit                     key.Binding
 }
 
 func defaultKeys() keyMap {
+	bind := func(help, desc string, keys ...string) key.Binding {
+		return key.NewBinding(key.WithKeys(keys...), key.WithHelp(help, desc))
+	}
 	return keyMap{
-		Up:       key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "previous control")),
-		Down:     key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "next control")),
-		Left:     key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←/h", "decrease")),
-		Right:    key.NewBinding(key.WithKeys("right", "l"), key.WithHelp("→/l", "increase")),
-		BigLeft:  key.NewBinding(key.WithKeys("shift+left", "H"), key.WithHelp("⇧←/H", "decrease more")),
-		BigRight: key.NewBinding(key.WithKeys("shift+right", "L"), key.WithHelp("⇧→/L", "increase more")),
-		Power:    key.NewBinding(key.WithKeys("space", "p"), key.WithHelp("space", "on/off")),
-		NextMode: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "white/colour/scene")),
-		PrevMode: key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("⇧tab", "previous mode")),
-		Warm:     key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "warm white")),
-		Cool:     key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "cool white")),
-		Preset:   key.NewBinding(key.WithKeys("1", "2", "3", "4", "5", "6", "7", "8", "9"), key.WithHelp("1-9", "colour presets")),
-		Hex:      key.NewBinding(key.WithKeys("#", "x"), key.WithHelp("#", "type a hex colour")),
-		NextBulb: key.NewBinding(key.WithKeys("b", "]"), key.WithHelp("b", "next light")),
-		PrevBulb: key.NewBinding(key.WithKeys("B", "["), key.WithHelp("B", "previous light")),
-		Rename:   key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "name this light")),
-		Rescan:   key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "scan network")),
-		Refresh:  key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "re-read light")),
-		Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "all keys")),
-		Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c", "esc"), key.WithHelp("q", "quit")),
+		Left:        bind("←/h", "previous", "left", "h"),
+		Right:       bind("→/l", "next", "right", "l"),
+		Up:          bind("↑/k", "row up", "up", "k"),
+		Down:        bind("↓/j", "row down", "down", "j"),
+		NextSection: bind("tab", "next tab", "tab"),
+		PrevSection: bind("⇧tab", "previous tab", "shift+tab"),
+		Apply:       bind("enter", "apply to the light", "enter"),
+		Power:       bind("space", "on / off now", "space"),
+		Revert:      bind("esc", "back to what is on", "esc"),
+		Surprise:    bind("z", "surprise me", "z"),
+		Brighter:    bind("+", "brighter", "+", "=", "]"),
+		Dimmer:      bind("-", "dimmer", "-", "_", "["),
+		Faster:      bind(".", "scene faster", ".", ">"),
+		Slower:      bind(",", "scene slower", ",", "<"),
+		NextBulb:    bind("b", "next light", "b"),
+		Rename:      bind("n", "name this light", "n"),
+		Rescan:      bind("d", "scan network", "d"),
+		Help:        bind("?", "all keys", "?"),
+		Quit:        bind("q", "quit", "q", "ctrl+c"),
 	}
 }
 
-// ShortHelp shows one line; the arrows are summarised so it fits the panel.
+// ShortHelp is one line, so the arrows are summarised.
 func (k keyMap) ShortHelp() []key.Binding {
 	short := func(keys, desc string) key.Binding {
 		return key.NewBinding(key.WithKeys(keys), key.WithHelp(keys, desc))
 	}
 	return []key.Binding{
-		short("space", "on/off"), short("tab", "mode"), short("↑↓", "choose"),
-		short("←→", "adjust"), short("1-9", "colours"), short("?", "more"), short("q", "quit"),
+		short("←→↑↓", "browse"), short("enter", "apply"), short("tab", "tabs"),
+		short("+/-", "bright"), short("space", "power"), short("?", "more"), short("q", "quit"),
 	}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Down, k.Left, k.Right, k.BigLeft, k.BigRight},
-		{k.Power, k.NextMode, k.PrevMode, k.Warm, k.Cool, k.Preset, k.Hex},
-		{k.NextBulb, k.PrevBulb, k.Rename, k.Rescan, k.Refresh, k.Help, k.Quit},
+		{k.Left, k.Right, k.Up, k.Down, k.NextSection, k.PrevSection},
+		{k.Apply, k.Power, k.Revert, k.Surprise, k.Brighter, k.Dimmer},
+		{k.Faster, k.Slower, k.NextBulb, k.Rename, k.Rescan, k.Quit},
 	}
 }
 

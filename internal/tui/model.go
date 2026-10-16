@@ -1,14 +1,18 @@
 // Package tui is the interactive Bubble Tea screen for WiZ lights.
+//
+// The screen is a preset browser: moving through colours, whites and scenes
+// only changes the on-screen preview. Enter sends the highlighted preset to
+// the light; space switches it on or off straight away.
 package tui
 
 import (
 	"context"
 	"fmt"
-	"strings"
+	"math"
+	"math/rand/v2"
 	"time"
 
 	"charm.land/bubbles/v2/help"
-	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
@@ -18,36 +22,41 @@ import (
 
 const (
 	pollEvery      = 3 * time.Second
-	debounce       = 90 * time.Millisecond
-	editQuietSpell = 1500 * time.Millisecond // poll results do not overwrite fresh edits
+	frameEvery     = 33 * time.Millisecond
 	requestTimeout = 2 * time.Second
-	defaultTemp    = 2700
+	tweenRate      = 0.22 // share of the remaining colour distance covered per frame
+	dimStep        = 10
+	speedStep      = 20
+	hueStep        = 6
+	satStep        = 0.05
 )
 
-type row int
+type section int
 
 const (
-	rowPower row = iota
-	rowBright
-	rowTemp
-	rowRed
-	rowGreen
-	rowBlue
-	rowScene
-	rowSpeed
+	sectionColors section = iota
+	sectionWhites
+	sectionScenes
+	sectionCustom
+	sectionCount
 )
 
-var rowsByMode = map[wiz.Mode][]row{
-	wiz.ModeWhite: {rowPower, rowBright, rowTemp},
-	wiz.ModeColor: {rowPower, rowBright, rowRed, rowGreen, rowBlue},
-	wiz.ModeScene: {rowPower, rowBright, rowScene, rowSpeed},
+func (s section) String() string {
+	return [...]string{"Colours", "Whites", "Scenes", "Custom"}[s]
 }
+
+type customRow int
+
+const (
+	rowHue customRow = iota
+	rowSaturation
+	customRows
+)
 
 type inputKind int
 
 const (
 	inputNone inputKind = iota
-	inputHex
 	inputRename
 )
 
@@ -62,8 +71,11 @@ type (
 		state wiz.State
 		err   error
 	}
-	sentMsg  struct{ err error }
-	flushMsg struct{ seq int }
+	appliedMsg struct {
+		label string
+		err   error
+	}
+	frameMsg struct{}
 	pollMsg  struct{}
 )
 
@@ -76,34 +88,33 @@ type Model struct {
 	current int
 	state   wiz.State
 	online  bool
+	synced  bool // the cursor has been placed on the light's live preset once
 	loading bool
+	busy    bool
 
-	// What the user is steering the light towards; synced from polls when idle.
-	mode     wiz.Mode
-	on       bool
-	dim      int
-	temp     int
-	red      int
-	green    int
-	blue     int
-	sceneIdx int
+	sections [sectionCount][]item
+	section  section
+	cursor   [sectionCount]int
+	custom   customRow
+	hue      float64
+	sat      float64
+	dim      int // brightness the next enter will send
 	speed    int
 
-	focus    int
-	seq      int
-	lastEdit time.Time
-	busy     int
+	shown     [3]float64 // preview colour as drawn, easing towards the target
+	animating bool
+	frame     int
 
-	note string
-	err  string
+	toast    string
+	toastBad bool
 
 	input     textinput.Model
 	inputKind inputKind
-	spinner   spinner.Model
 	help      help.Model
 	keys      keyMap
 	width     int
 	height    int
+	columns   int
 }
 
 // New builds the model. store holds remembered bulbs and names.
@@ -112,24 +123,26 @@ func New(client wiz.Client, store config.Store) Model {
 	input.CharLimit = 32
 	helpModel := help.New()
 	helpModel.Styles = helpStyles()
-	return Model{
+	m := Model{
 		client:  client,
 		store:   store,
 		loading: true,
+		hue:     28,
+		sat:     0.9,
 		dim:     wiz.MaxDimming,
-		temp:    defaultTemp,
-		red:     wiz.Presets[1].R, green: wiz.Presets[1].G, blue: wiz.Presets[1].B,
 		speed:   wiz.DefaultSpeed,
-		spinner: spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(accentText)),
 		input:   input,
 		help:    helpModel,
 		keys:    defaultKeys(),
-		note:    "looking for lights…",
+		toast:   "looking for your lights…",
+		columns: 4,
 	}
+	m.sections = [sectionCount][]item{colorItems, whiteItems, sceneItems(), nil}
+	return m
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, m.loadCmd(false), tea.Tick(pollEvery, func(time.Time) tea.Msg { return pollMsg{} }))
+	return tea.Batch(m.loadCmd(false), tea.Tick(pollEvery, func(time.Time) tea.Msg { return pollMsg{} }))
 }
 
 func (m Model) bulb() (wiz.Bulb, bool) {
@@ -146,8 +159,52 @@ func (m Model) bulbName(bulb wiz.Bulb) string {
 	return "WiZ " + bulb.MAC[len(bulb.MAC)-4:]
 }
 
-// loadCmd finds bulbs: remembered ones first, a full network scan when
-// forced or when none of them answer.
+// selected is the preset under the cursor; in Custom it is the hue picker.
+func (m Model) selected() item {
+	if m.section == sectionCustom {
+		return item{name: "Custom", color: hsvToRGB(m.hue, m.sat)}
+	}
+	return m.sections[m.section][m.cursor[m.section]]
+}
+
+// pending is true when enter would change the light.
+func (m Model) pending() bool {
+	if !m.online {
+		return false
+	}
+	return !m.state.On || !m.selected().matches(m.state) || m.dim != m.state.Dimming
+}
+
+// targetColor is what the preview orb eases towards.
+func (m Model) targetColor() rgb {
+	return m.selected().swatch().scale(0.3 + 0.7*float64(m.dim)/100)
+}
+
+func (m Model) lit() bool { return m.state.On || m.pending() }
+
+func (m Model) breathing() bool {
+	selected := m.selected()
+	return selected.kind == kindScene && selected.scene.Dynamic && m.lit()
+}
+
+// glow is the halo size; animated scenes breathe.
+func (m Model) glow() float64 {
+	if !m.breathing() {
+		return 1
+	}
+	return 1 + 0.18*math.Sin(float64(m.frame)*frameEvery.Seconds()*2*math.Pi/2.4)
+}
+
+func (m Model) shownColor() rgb {
+	return rgb{int(m.shown[0]), int(m.shown[1]), int(m.shown[2])}
+}
+
+func (m Model) needsFrames() bool {
+	target := m.targetColor()
+	far := math.Abs(m.shown[0]-float64(target.R)) + math.Abs(m.shown[1]-float64(target.G)) + math.Abs(m.shown[2]-float64(target.B))
+	return far > 2 || m.breathing()
+}
+
 func (m Model) loadCmd(forceScan bool) tea.Cmd {
 	client, store := m.client, m.store
 	return func() tea.Msg {
@@ -177,121 +234,94 @@ func (m Model) statusCmd() tea.Cmd {
 	}
 }
 
-func (m *Model) sendCmd(change wiz.Change) tea.Cmd {
+func (m *Model) applyCmd(change wiz.Change, label string) tea.Cmd {
 	bulb, ok := m.bulb()
 	if !ok {
 		return nil
 	}
-	m.busy++
+	m.busy = true
 	client := m.client
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 		defer cancel()
-		return sentMsg{err: client.Set(ctx, bulb.IP, change)}
+		return appliedMsg{label: label, err: client.Set(ctx, bulb.IP, change)}
 	}
 }
 
-// change is the setPilot request that makes the light match the model.
-func (m Model) change() wiz.Change {
-	if !m.on {
-		return wiz.Power(false)
-	}
-	switch m.mode {
-	case wiz.ModeColor:
-		return wiz.Color(m.red, m.green, m.blue, m.dim)
-	case wiz.ModeScene:
-		return wiz.SceneChange(wiz.Scenes[m.sceneIdx], m.speed, m.dim)
-	default:
-		return wiz.White(m.temp, m.dim)
-	}
-}
-
-// edited marks a local change and sends it after a short pause, so holding
-// an arrow key sends one request per pause instead of one per repeat.
-func (m *Model) edited() tea.Cmd {
-	m.lastEdit = time.Now()
-	m.err = ""
-	m.seq++
-	seq := m.seq
-	return tea.Tick(debounce, func(time.Time) tea.Msg { return flushMsg{seq: seq} })
-}
-
-func (m *Model) syncFromState(state wiz.State) {
-	m.on = state.On
+// placeCursorOnLive moves every section's cursor to the preset the light is
+// showing, and opens that section.
+func (m *Model) placeCursorOnLive(state wiz.State) {
 	if state.Dimming > 0 {
 		m.dim = state.Dimming
 	}
-	m.mode = state.Mode()
-	switch m.mode {
-	case wiz.ModeWhite:
-		if state.Temp > 0 {
-			m.temp = state.Temp
-		}
-	case wiz.ModeColor:
-		m.red, m.green, m.blue = state.RGB()
-	case wiz.ModeScene:
-		if i := wiz.SceneIndex(state.SceneID); i >= 0 {
-			m.sceneIdx = i
-		}
-		if state.Speed > 0 {
-			m.speed = state.Speed
+	if state.Speed > 0 {
+		m.speed = state.Speed
+	}
+	for s := range sectionCustom {
+		for i, each := range m.sections[s] {
+			if each.matches(state) {
+				m.cursor[s], m.section = i, s
+			}
 		}
 	}
-	m.clampFocus()
-}
-
-func (m *Model) clampFocus() {
-	if rows := rowsByMode[m.mode]; m.focus >= len(rows) {
-		m.focus = len(rows) - 1
+	if state.Mode() == wiz.ModeColor {
+		r, g, b := state.RGB()
+		m.hue, m.sat = rgbToHS(rgb{r, g, b})
+		if !m.selected().matches(state) {
+			m.section = sectionCustom
+		}
 	}
 }
 
-func (m Model) focusedRow() row { return rowsByMode[m.mode][m.focus] }
+func (m *Model) say(text string, bad bool) { m.toast, m.toastBad = text, bad }
 
-func clamp(value, low, high int) int { return max(low, min(high, value)) }
-
-// adjust moves the focused control by steps (negative = left).
-func (m *Model) adjust(steps int, big bool) {
-	bulb, _ := m.bulb()
-	pick := func(small, large int) int {
-		if big {
-			return large * steps
+func (m *Model) move(step int) {
+	if m.section == sectionCustom {
+		switch m.custom {
+		case rowHue:
+			m.hue = math.Mod(m.hue+float64(step*hueStep)+360, 360)
+		case rowSaturation:
+			m.sat = math.Max(0, math.Min(1, m.sat+float64(step)*satStep))
 		}
-		return small * steps
-	}
-	switch m.focusedRow() {
-	case rowPower:
-		m.on = steps > 0
 		return
-	case rowBright:
-		m.dim = clamp(m.dim+pick(5, 20), max(bulb.MinDim, 1), wiz.MaxDimming)
-	case rowTemp:
-		m.temp = clamp(m.temp+pick(100, 500), bulb.MinTemp, bulb.MaxTemp)
-	case rowRed:
-		m.red = clamp(m.red+pick(5, 32), 0, 255)
-	case rowGreen:
-		m.green = clamp(m.green+pick(5, 32), 0, 255)
-	case rowBlue:
-		m.blue = clamp(m.blue+pick(5, 32), 0, 255)
-	case rowScene:
-		m.sceneIdx = (m.sceneIdx + pick(1, 6) + len(wiz.Scenes)*8) % len(wiz.Scenes)
-	case rowSpeed:
-		m.speed = clamp(m.speed+pick(10, 40), wiz.MinSpeed, wiz.MaxSpeed)
 	}
-	m.on = true
+	items := len(m.sections[m.section])
+	m.cursor[m.section] = (m.cursor[m.section] + step + items*4) % items
+}
+
+func (m *Model) moveRow(step int) {
+	if m.section == sectionCustom {
+		m.custom = customRow((int(m.custom) + step + int(customRows)) % int(customRows))
+		return
+	}
+	m.move(step * max(1, m.columns))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	if !next.animating && next.needsFrames() {
+		next.animating = true
+		cmd = tea.Batch(cmd, tea.Tick(frameEvery, func(time.Time) tea.Msg { return frameMsg{} }))
+	}
+	return next, cmd
+}
+
+func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.help.SetWidth(panelWidth(m.width))
+		m.columns = gridColumns(m.width)
+		m.help.SetWidth(contentWidth(m.width))
 		return m, nil
 
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
+	case frameMsg:
+		m.animating = false
+		m.frame++
+		target := m.targetColor()
+		for i, goal := range []int{target.R, target.G, target.B} {
+			m.shown[i] += (float64(goal) - m.shown[i]) * tweenRate
+		}
+		return m, nil
 
 	case loadedMsg:
 		return m.onLoaded(msg)
@@ -299,43 +329,47 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		bulb, ok := m.bulb()
 		if !ok || bulb.MAC != msg.mac {
-			return m, nil // a reply for a bulb we have since switched away from
+			return m, nil // reply for a light we switched away from
 		}
 		if msg.err != nil {
 			m.online = false
-			m.err = msg.err.Error()
+			m.say(msg.err.Error(), true)
 			return m, nil
 		}
-		if !m.online && strings.HasPrefix(m.err, "getPilot") {
-			m.err = ""
+		if !m.online && m.toastBad {
+			m.say("", false)
 		}
 		m.online, m.state = true, msg.state
-		if time.Since(m.lastEdit) > editQuietSpell {
-			m.syncFromState(msg.state)
+		if !m.synced {
+			m.synced = true
+			m.placeCursorOnLive(msg.state)
 		}
 		return m, nil
 
 	case pollMsg:
 		next := tea.Tick(pollEvery, func(time.Time) tea.Msg { return pollMsg{} })
-		if m.busy > 0 || m.loading {
+		if m.busy || m.loading {
 			return m, next
 		}
 		return m, tea.Batch(next, m.statusCmd())
 
-	case flushMsg:
-		if msg.seq != m.seq {
-			return m, nil
-		}
-		return m, m.sendCmd(m.change())
-
-	case sentMsg:
-		m.busy--
+	case appliedMsg:
+		m.busy = false
 		if msg.err != nil {
-			m.err = msg.err.Error()
+			m.say(msg.err.Error(), true)
 			return m, nil
 		}
-		m.err = ""
+		m.say(msg.label, false)
 		return m, m.statusCmd()
+
+	case tea.MouseWheelMsg:
+		switch msg.Mouse().Button {
+		case tea.MouseWheelUp:
+			m.move(-1)
+		case tea.MouseWheelDown:
+			m.move(1)
+		}
+		return m, nil
 
 	case tea.KeyPressMsg:
 		if m.inputKind != inputNone {
@@ -346,11 +380,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) onLoaded(msg loadedMsg) (tea.Model, tea.Cmd) {
+func (m Model) onLoaded(msg loadedMsg) (Model, tea.Cmd) {
 	m.loading = false
 	if msg.err != nil {
-		m.err = msg.err.Error()
-		m.note = ""
+		m.say(msg.err.Error(), true)
 		return m, nil
 	}
 	if len(msg.bulbs) == 0 {
@@ -358,8 +391,7 @@ func (m Model) onLoaded(msg loadedMsg) (tea.Model, tea.Cmd) {
 			m.loading = true
 			return m, m.loadCmd(true)
 		}
-		m.note = ""
-		m.err = "no WiZ light answered on this network. Is it powered, and is this Mac on the same Wi-Fi? Press d to scan again."
+		m.say("no WiZ light answered. Is it powered, and is this Mac on the same Wi-Fi? Press d to scan again.", true)
 		return m, nil
 	}
 	previous, hadPrevious := m.bulb()
@@ -368,20 +400,20 @@ func (m Model) onLoaded(msg loadedMsg) (tea.Model, tea.Cmd) {
 		m.store.Remember(bulb.MAC, bulb.IP)
 	}
 	if err := m.store.Save(); err != nil {
-		m.err = err.Error()
+		m.say(err.Error(), true)
 	}
-	m.current = 0
 	target := m.store.Default
 	if hadPrevious {
 		target = previous.MAC
 	}
+	m.current = 0
 	for i, bulb := range msg.bulbs {
 		if bulb.MAC == target {
 			m.current = i
 		}
 	}
-	m.note = fmt.Sprintf("found %d light%s", len(msg.bulbs), plural(len(msg.bulbs)))
-	m.lastEdit = time.Time{}
+	m.synced = false
+	m.say(fmt.Sprintf("found %d light%s", len(msg.bulbs), plural(len(msg.bulbs))), false)
 	return m, m.statusCmd()
 }
 
@@ -392,58 +424,33 @@ func plural(n int) string {
 	return "s"
 }
 
-func (m Model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateInput(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.inputKind = inputNone
 		m.input.Blur()
 		return m, nil
 	case "enter":
-		kind, value := m.inputKind, m.input.Value()
 		m.inputKind = inputNone
 		m.input.Blur()
-		return m.commitInput(kind, value)
+		bulb, ok := m.bulb()
+		if !ok {
+			return m, nil
+		}
+		m.store.Rename(bulb.MAC, m.input.Value())
+		if err := m.store.Save(); err != nil {
+			m.say(err.Error(), true)
+			return m, nil
+		}
+		m.say("this light is now called "+m.bulbName(bulb), false)
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
 }
 
-func (m Model) commitInput(kind inputKind, value string) (tea.Model, tea.Cmd) {
-	switch kind {
-	case inputHex:
-		red, green, blue, err := wiz.ParseColor(value)
-		if err != nil {
-			m.err = err.Error()
-			return m, nil
-		}
-		m.mode, m.red, m.green, m.blue, m.on = wiz.ModeColor, red, green, blue, true
-		m.clampFocus()
-		return m, m.edited()
-	case inputRename:
-		bulb, ok := m.bulb()
-		if !ok {
-			return m, nil
-		}
-		m.store.Rename(bulb.MAC, value)
-		if err := m.store.Save(); err != nil {
-			m.err = err.Error()
-			return m, nil
-		}
-		m.note = "renamed to " + m.bulbName(bulb)
-	}
-	return m, nil
-}
-
-func (m Model) startInput(kind inputKind, prompt, value string) (tea.Model, tea.Cmd) {
-	m.inputKind = kind
-	m.input.Prompt = prompt
-	m.input.SetValue(value)
-	m.input.CursorEnd()
-	return m, m.input.Focus()
-}
-
-func (m Model) updateKeys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateKeys(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	k := m.keys
 	switch {
 	case matches(msg, k.Quit):
@@ -452,71 +459,74 @@ func (m Model) updateKeys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.help.ShowAll = !m.help.ShowAll
 		return m, nil
 	case matches(msg, k.Rescan):
-		m.loading, m.note, m.err = true, "scanning the network…", ""
+		m.loading = true
+		m.say("scanning the network…", false)
 		return m, m.loadCmd(true)
+	case matches(msg, k.NextSection):
+		m.section = (m.section + 1) % sectionCount
+	case matches(msg, k.PrevSection):
+		m.section = (m.section + sectionCount - 1) % sectionCount
+	case matches(msg, k.Left):
+		m.move(-1)
+	case matches(msg, k.Right):
+		m.move(1)
+	case matches(msg, k.Up):
+		m.moveRow(-1)
+	case matches(msg, k.Down):
+		m.moveRow(1)
+	case matches(msg, k.Brighter):
+		m.dim = min(wiz.MaxDimming, m.dim+dimStep)
+	case matches(msg, k.Dimmer):
+		bulb, _ := m.bulb()
+		m.dim = max(max(bulb.MinDim, wiz.MinDimming), m.dim-dimStep)
+	case matches(msg, k.Faster):
+		m.speed = min(wiz.MaxSpeed, m.speed+speedStep)
+	case matches(msg, k.Slower):
+		m.speed = max(wiz.MinSpeed, m.speed-speedStep)
+	case matches(msg, k.Surprise):
+		if m.section == sectionCustom {
+			m.hue, m.sat = rand.Float64()*360, 0.6+rand.Float64()*0.4
+		} else {
+			m.cursor[m.section] = rand.IntN(len(m.sections[m.section]))
+		}
+	case matches(msg, k.Revert):
+		if m.online {
+			m.placeCursorOnLive(m.state)
+		}
 	}
 	if _, ok := m.bulb(); !ok {
 		return m, nil
 	}
 	switch {
+	case matches(msg, k.Apply):
+		if m.busy {
+			return m, nil
+		}
+		selected := m.selected()
+		label := fmt.Sprintf("%s at %d%%", selected.name, m.dim)
+		return m, m.applyCmd(selected.change(m.dim, m.speed), label)
 	case matches(msg, k.Power):
-		m.on = !m.on
-		m.lastEdit = time.Now()
-		return m, m.sendCmd(m.change())
-	case matches(msg, k.NextMode), matches(msg, k.PrevMode):
-		step := 1
-		if matches(msg, k.PrevMode) {
-			step = 2
+		on := !m.state.On
+		label := "light off"
+		if on {
+			label = "light on"
 		}
-		m.mode = wiz.Mode((int(m.mode) + step) % 3)
-		m.on = true
-		m.clampFocus()
-		return m, m.edited()
-	case matches(msg, k.Up):
-		m.focus = (m.focus + len(rowsByMode[m.mode]) - 1) % len(rowsByMode[m.mode])
-	case matches(msg, k.Down):
-		m.focus = (m.focus + 1) % len(rowsByMode[m.mode])
-	case matches(msg, k.Left), matches(msg, k.Right), matches(msg, k.BigLeft), matches(msg, k.BigRight):
-		steps := 1
-		if matches(msg, k.Left) || matches(msg, k.BigLeft) {
-			steps = -1
-		}
-		m.adjust(steps, matches(msg, k.BigLeft, k.BigRight))
-		return m, m.edited()
-	case matches(msg, k.Warm), matches(msg, k.Cool):
-		bulb, _ := m.bulb()
-		m.mode, m.on, m.temp = wiz.ModeWhite, true, bulb.MinTemp+500
-		if matches(msg, k.Cool) {
-			m.temp = bulb.MaxTemp
-		}
-		m.clampFocus()
-		return m, m.edited()
-	case matches(msg, k.Preset):
-		preset := wiz.Presets[int(msg.String()[0]-'1')]
-		m.mode, m.on = wiz.ModeColor, true
-		m.red, m.green, m.blue = preset.R, preset.G, preset.B
-		m.clampFocus()
-		m.note = preset.Name
-		return m, m.edited()
-	case matches(msg, k.Hex):
-		return m.startInput(inputHex, "colour # ", fmt.Sprintf("%02x%02x%02x", m.red, m.green, m.blue))
+		m.state.On = on
+		return m, m.applyCmd(wiz.Power(on), label)
 	case matches(msg, k.Rename):
 		bulb, _ := m.bulb()
-		return m.startInput(inputRename, "name › ", m.store.Name(bulb.MAC))
-	case matches(msg, k.NextBulb), matches(msg, k.PrevBulb):
-		step := 1
-		if matches(msg, k.PrevBulb) {
-			step = len(m.bulbs) - 1
-		}
-		m.current = (m.current + step) % len(m.bulbs)
-		m.online, m.lastEdit = false, time.Time{}
+		m.inputKind = inputRename
+		m.input.Prompt = "name › "
+		m.input.SetValue(m.store.Name(bulb.MAC))
+		m.input.CursorEnd()
+		return m, m.input.Focus()
+	case matches(msg, k.NextBulb):
+		m.current = (m.current + 1) % len(m.bulbs)
+		m.online, m.synced = false, false
 		m.store.Default = m.bulbs[m.current].MAC
 		if err := m.store.Save(); err != nil {
-			m.err = err.Error()
+			m.say(err.Error(), true)
 		}
-		return m, m.statusCmd()
-	case matches(msg, k.Refresh):
-		m.lastEdit = time.Time{}
 		return m, m.statusCmd()
 	}
 	return m, nil

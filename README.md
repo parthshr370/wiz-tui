@@ -41,34 +41,45 @@ you pick one of these:
 
 ## The interactive screen
 
-`wiz` opens a panel with a live colour preview, the light's IP, firmware and
-Wi-Fi signal, and three modes:
+![Browsing scenes](docs/scenes.png)
 
-- **White**: brightness and colour temperature, across the range the bulb
-  reports (2200 to 6500 K on the colour bulbs).
-- **Colour**: brightness and red, green and blue sliders, nine presets on keys
-  1 to 9, and `#` to type any hex colour.
-- **Scene**: all 36 built-in scenes in a grid, with speed for the animated ones.
+`wiz` opens a preset browser. Moving around only changes the glowing bulb on
+the left, which eases to each colour as you land on it; **enter** sends it to
+the light. The card shows what you are previewing, the brightness enter will
+use, and what the light is doing **now**; the badge says `⏎ enter to apply`
+until they match, then `✓ live`.
 
-Changes are sent as you move a slider, batched so holding a key sends one
-request per pause rather than one per key repeat. The screen re-reads the
-light every 3 seconds, so a change from the phone app shows up too.
+Four tabs, all wrapping, so you can just keep circling:
+
+- **Colours**: 24, opening with the dark-hearth omp theme (Ember, Herdr red,
+  Hearth gold, Aqua, Teal, Rose, Violet, Sea blue) then a full hue sweep.
+- **Whites**: Candle 2200 K up to Cool 6500 K.
+- **Scenes**: all 36 built-in scenes, each with a mood swatch. Animated ones
+  make the preview bulb breathe, and `,` `.` set their speed.
+- **Custom**: a rainbow hue slider and a saturation slider for any colour.
+
+![Custom colour](docs/custom.png)
+
+The preset the light is showing is marked `◉`. The screen re-reads the light
+every 3 seconds, so a change from the phone app shows up too, and opening the
+screen lands the cursor on whatever is live.
 
 | Key | Does |
 |---|---|
-| `space` / `p` | on or off |
-| `tab` / `shift+tab` | next or previous mode |
-| `↑` `↓` / `k` `j` | choose a control |
-| `←` `→` / `h` `l` | adjust it; `shift` or `H` `L` for bigger steps |
-| `w` / `c` | warm or cool white |
-| `1`…`9` | colour presets |
-| `#` | type a hex colour |
-| `b` / `B` | next or previous light |
+| `←` `→` / `h` `l`, mouse wheel | previous or next preset (Custom: move the slider) |
+| `↑` `↓` / `k` `j` | row up or down (Custom: pick the slider) |
+| `tab` / `shift+tab` | next or previous tab |
+| `enter` | apply to the light |
+| `+` / `-` | brightness, applied with the next enter |
+| `,` / `.` | slower or faster animated scene |
+| `space` | on or off, straight away |
+| `esc` | jump back to what is live |
+| `z` | surprise me: a random preset in this tab |
+| `b` | next light |
 | `n` | name this light |
 | `d` | scan the network again |
-| `r` | re-read the light now |
 | `?` | all keys |
-| `q` / `esc` | quit |
+| `q` | quit |
 
 ## Commands
 
