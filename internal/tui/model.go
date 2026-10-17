@@ -23,7 +23,8 @@ import (
 
 const (
 	pollEvery      = 3 * time.Second
-	frameEvery     = 33 * time.Millisecond
+	frameEvery     = 33 * time.Millisecond  // while the preview eases to a new colour
+	sceneFrame     = 100 * time.Millisecond // while it only breathes for an animated scene
 	requestTimeout = 2 * time.Second
 	tweenRate      = 0.22 // share of the remaining colour distance covered per frame
 	dimStep        = 10
@@ -44,12 +45,13 @@ const (
 	sectionMoods
 	sectionWhites
 	sectionScenes
+	sectionToys
 	sectionCustom
 	sectionCount
 )
 
 func (s section) String() string {
-	return [...]string{"Favourites", "Colours", "Moods", "Whites", "Scenes", "Custom"}[s]
+	return [...]string{"Favourites", "Colours", "Moods", "Whites", "Scenes", "Toys", "Custom"}[s]
 }
 
 // sleepTimer fades the light down to the lowest brightness, then turns it
@@ -106,7 +108,7 @@ type (
 		label string
 		err   error
 	}
-	frameMsg struct{}
+	frameMsg time.Time
 	pollMsg  struct{}
 )
 
@@ -134,7 +136,9 @@ type Model struct {
 	sleep     sleepTimer
 	shown     [3]float64 // preview colour as drawn, easing towards the target
 	animating bool
-	frame     int
+	now       time.Time // time of the last preview frame, for the breathing glow
+	play      playing
+	playGen   int // bumped per toy, so ticks from a stopped toy are dropped
 
 	toast    string
 	toastBad bool
@@ -168,7 +172,7 @@ func New(client wiz.Client, store config.Store) Model {
 		toast:   "looking for your lights…",
 		columns: 4,
 	}
-	m.sections = [sectionCount][]item{nil, colorItems, moodItems(), whiteItems, sceneItems(), nil}
+	m.sections = [sectionCount][]item{nil, colorItems, moodItems(), whiteItems, sceneItems(), toyItems(), nil}
 	m.sections[sectionFavourites] = m.loadFavourites()
 	return m
 }
@@ -201,7 +205,7 @@ func (m Model) selected() item {
 
 // pending is true when enter would change the light.
 func (m Model) pending() bool {
-	if !m.online {
+	if !m.online || m.play.active() {
 		return false
 	}
 	selected := m.selected()
@@ -211,6 +215,9 @@ func (m Model) pending() bool {
 
 // targetColor is what the preview orb eases towards.
 func (m Model) targetColor() rgb {
+	if m.play.active() {
+		return m.toyColor()
+	}
 	selected := m.selected()
 	if selected.kind == kindScene {
 		if selected.scene.ID == dimToWarmScene {
@@ -224,7 +231,7 @@ func (m Model) targetColor() rgb {
 	return selected.swatch().scale(0.3 + 0.7*float64(m.dim)/100)
 }
 
-func (m Model) lit() bool { return m.state.On || m.pending() }
+func (m Model) lit() bool { return m.state.On || m.pending() || m.play.active() }
 
 func (m Model) breathing() bool {
 	selected := m.selected()
@@ -268,17 +275,24 @@ func (m Model) glow() float64 {
 	if !m.breathing() {
 		return 1
 	}
-	return 1 + 0.18*math.Sin(float64(m.frame)*frameEvery.Seconds()*2*math.Pi/2.4)
+	return 1 + 0.18*math.Sin(float64(m.now.UnixMilli())/1000*2*math.Pi/2.4)
 }
 
 func (m Model) shownColor() rgb {
 	return rgb{int(m.shown[0]), int(m.shown[1]), int(m.shown[2])}
 }
 
-func (m Model) needsFrames() bool {
+// frameInterval returns the preview's frame interval and whether it needs one.
+func (m Model) frameInterval() (time.Duration, bool) {
 	target := m.targetColor()
 	far := math.Abs(m.shown[0]-float64(target.R)) + math.Abs(m.shown[1]-float64(target.G)) + math.Abs(m.shown[2]-float64(target.B))
-	return far > 2 || m.breathing()
+	switch {
+	case far > 2:
+		return frameEvery, true
+	case m.breathing():
+		return sceneFrame, true
+	}
+	return 0, false
 }
 
 func (m Model) loadCmd(forceScan bool) tea.Cmd {
@@ -427,9 +441,9 @@ func (m *Model) moveRow(step int) {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
-	if !next.animating && next.needsFrames() {
+	if every, needed := next.frameInterval(); !next.animating && needed {
 		next.animating = true
-		cmd = tea.Batch(cmd, tea.Tick(frameEvery, func(time.Time) tea.Msg { return frameMsg{} }))
+		cmd = tea.Batch(cmd, tea.Tick(every, func(t time.Time) tea.Msg { return frameMsg(t) }))
 	}
 	return next, cmd
 }
@@ -444,7 +458,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 
 	case frameMsg:
 		m.animating = false
-		m.frame++
+		m.now = time.Time(msg)
 		target := m.targetColor()
 		for i, goal := range []int{target.R, target.G, target.B} {
 			m.shown[i] += (float64(goal) - m.shown[i]) * tweenRate
@@ -476,7 +490,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 
 	case pollMsg:
 		next := tea.Tick(pollEvery, func(time.Time) tea.Msg { return pollMsg{} })
-		if m.busy || m.loading {
+		if m.busy || m.loading || m.play.active() {
 			return m, next
 		}
 		return m, tea.Batch(next, m.statusCmd(), m.tickSleep(time.Now()))
@@ -489,6 +503,12 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		m.say(msg.label, false)
 		return m, m.statusCmd()
+
+	case toyTickMsg:
+		return m.onToyTick(msg)
+
+	case toySentMsg:
+		return m.onToySent(msg)
 
 	case tea.MouseWheelMsg:
 		switch msg.Mouse().Button {
@@ -580,6 +600,13 @@ func (m Model) updateInput(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 
 func (m Model) updateKeys(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	k := m.keys
+	if m.play.active() {
+		cmd := m.stopToy("stopped " + m.play.spec.Name + ", the light is back")
+		if matches(msg, k.Quit) {
+			return m, tea.Sequence(cmd, tea.Quit)
+		}
+		return m, cmd
+	}
 	switch {
 	case matches(msg, k.Quit):
 		return m, tea.Quit
@@ -633,6 +660,9 @@ func (m Model) updateKeys(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		selected := m.selected()
+		if selected.kind == kindToy {
+			return m, m.startToy(selected.toy)
+		}
 		label := fmt.Sprintf("%s at %d%%", selected.name, m.dim)
 		return m, m.applyCmd(selected.change(m.dim, m.speed), label)
 	case matches(msg, k.Power):

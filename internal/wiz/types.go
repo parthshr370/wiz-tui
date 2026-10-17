@@ -121,6 +121,25 @@ func SceneChange(scene Scene, speed, dimming int) Change {
 // Dim changes brightness only.
 func Dim(dimming int) Change { return Change{On: new(true), Dimming: dimming} }
 
+// Restore is the change that puts a light back to a state read by Status.
+func Restore(s State) Change {
+	if !s.On {
+		return Power(false)
+	}
+	switch s.Mode() {
+	case ModeScene:
+		if i := SceneIndex(s.SceneID); i >= 0 {
+			return SceneChange(Scenes[i], s.Speed, s.Dimming)
+		}
+		return Change{On: new(true), SceneID: s.SceneID, Speed: s.Speed, Dimming: s.Dimming}
+	case ModeColor:
+		r, g, b := s.RGB()
+		return Color(r, g, b, s.Dimming)
+	default:
+		return White(s.Temp, s.Dimming)
+	}
+}
+
 // SceneKind is how the WiZ app groups a scene.
 type SceneKind int
 

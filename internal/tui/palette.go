@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/parthshr370/wiz-tui/internal/toys"
 	"github.com/parthshr370/wiz-tui/internal/wiz"
 )
 
@@ -17,6 +18,7 @@ const (
 	kindColor itemKind = iota
 	kindWhite
 	kindScene
+	kindToy
 )
 
 // item is one preset the user can land on and apply with enter.
@@ -26,6 +28,7 @@ type item struct {
 	color  rgb
 	kelvin int
 	scene  wiz.Scene
+	toy    toys.Spec
 }
 
 // swatch is the on-screen colour of the item at full brightness.
@@ -57,6 +60,8 @@ func (it item) matches(state wiz.State) bool {
 		return state.Mode() == wiz.ModeWhite && state.Temp == it.kelvin
 	case kindScene:
 		return state.SceneID == it.scene.ID
+	case kindToy:
+		return false
 	default:
 		r, g, b := state.RGB()
 		return state.Mode() == wiz.ModeColor && rgb{r, g, b} == it.color
@@ -70,6 +75,8 @@ func (it item) key() string {
 		return fmt.Sprintf("white:%d", it.kelvin)
 	case kindScene:
 		return fmt.Sprintf("scene:%d", it.scene.ID)
+	case kindToy:
+		return "toy:" + it.toy.ID
 	default:
 		return "colour:" + hex(it.color)
 	}
@@ -110,6 +117,23 @@ func lookupItem(key string, tabs [][]item) (item, bool) {
 		}
 	}
 	return item{}, false
+}
+
+// toyColour is each toy's chip colour.
+var toyColour = map[string]rgb{
+	toys.BoxBreathing:   {254, 128, 25},
+	toys.SleepBreathing: {214, 93, 14},
+	toys.PartyID:        {255, 40, 170},
+	toys.MusicID:        {40, 200, 180},
+	toys.DiceID:         {250, 189, 47},
+}
+
+func toyItems() []item {
+	items := make([]item, 0, len(toys.Catalogue))
+	for _, spec := range toys.Catalogue {
+		items = append(items, item{name: spec.Name, kind: kindToy, toy: spec, color: toyColour[spec.ID]})
+	}
+	return items
 }
 
 // Colours open with the dark-hearth omp theme palette, then a full hue sweep.

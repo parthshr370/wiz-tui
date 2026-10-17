@@ -66,6 +66,7 @@ the first:
 - **Whites**: Candle 2200 K up to Cool 6500 K.
 - **Scenes**: the 21 animated colour scenes, each with a mood swatch. They
   make the preview bulb breathe, and `,` `.` set their speed.
+- **Toys**: things that play on the light; see below.
 - **Custom**: a rainbow hue slider and a saturation slider for any colour.
 
 ![Moods](docs/moods.png)
@@ -84,6 +85,24 @@ A few moods behave in their own way, and the screen says so:
 **Sleep timer.** `t` sets it to 15, 30 or 60 minutes, then off. Over that time
 the light dims in steps to its lowest level, then turns off. It runs inside
 `wiz`, so keep the screen open; `space` or turning the light off cancels it.
+
+**Toys.** `enter` starts one; any key stops it and puts the light back the
+way it was. A toy sends at most ten changes a second, and only when the light
+would change, so a held breath or a quiet room sends nothing. Toys can be
+pinned to Favourites like any preset.
+
+- **Box breathing**: breathe in 4 seconds while the light grows, hold 4, out 4
+  while it shrinks, hold 4.
+- **4-7-8 sleep**: in 4, hold 7, out 8. A good wind-down before Bedtime.
+- **Party**: a new colour on every beat at 120 bpm, each flash falling back
+  before the next.
+- **Music**: listens on the mic. Each beat moves to a new colour and the
+  loudness sets the brightness; a quiet room stays dim. macOS asks once to let
+  your terminal use the mic (System Settings, Privacy & Security,
+  Microphone). It hears what your speakers play, but needs it fairly loud.
+- **Dice**: one roll, a random colour or scene.
+
+![Toys](docs/toys.png)
 
 ![Browsing scenes](docs/scenes.png)
 
@@ -128,10 +147,19 @@ wiz list                     scan and list every light
 wiz name Desk lamp           name the selected light
 wiz use desk                 make it the default
 wiz -b 192.168.1.40 off      target one light by name, IP or MAC
+
+wiz breathe                  box breathing until ctrl-c
+wiz breathe 478 10           4-7-8 breathing for 10 minutes
+wiz party 128                colours on the beat at 128 bpm
+wiz music                    follow the mic
+wiz dice                     a random colour or scene
 ```
 
+The toys run until ctrl-c (or, for `breathe`, the minutes given), then put the
+light back the way they found it.
+
 Every change prints the light's state afterwards, for example
-`Room (192.168.68.104): on, colour #ff0000, 100%`.
+`Room (192.168.1.40): on, colour #ff0000, 100%`.
 
 ## How it works
 
@@ -155,4 +183,5 @@ cmd/wiz            CLI entry point; no command opens the TUI
 internal/wiz       UDP protocol: requests, signing, discovery, scenes, colours
 internal/config    ~/.config/wiz: signing key, remembered lights and names
 internal/tui       Bubble Tea model, keys and view
+internal/toys      breathing, party, music (mic via miniaudio) and dice
 ```

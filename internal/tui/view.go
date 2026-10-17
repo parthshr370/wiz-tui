@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"image/color"
+	"slices"
 	"strings"
 	"time"
 
@@ -48,6 +49,8 @@ const (
 	cardWidth  = orbCols + 4
 	chipWidth  = 19
 	gutter     = 3
+	// roomyHeight is the terminal height the layout needs with its spacing.
+	roomyHeight = 34
 )
 
 func helpStyles() help.Styles {
@@ -89,6 +92,7 @@ func (m Model) View() tea.View {
 	width := contentWidth(m.width)
 	parts := []string{m.viewTopBar(width), ""}
 	if _, ok := m.bulb(); ok && m.online {
+		parts = append(parts, m.viewTabs(width), "")
 		body := lipgloss.JoinHorizontal(lipgloss.Top,
 			m.viewCard(),
 			strings.Repeat(" ", gutter),
@@ -186,6 +190,8 @@ func (m Model) describe(it item) string {
 			return fmt.Sprintf("warmer as it dims · %d K", dimToWarmKelvin(m.dim))
 		}
 		return it.scene.About
+	case kindToy:
+		return it.toy.About
 	default:
 		return "colour · " + hex(it.color)
 	}
@@ -202,6 +208,9 @@ func meter(value, low, high, width int, fill rgb, bg color.Color) string {
 func (m Model) liveSummary() string {
 	dot := func(c rgb, text string) string {
 		return colorOf(c).Background(colHearth).Render("●") + styleAsh.Background(colHearth).Render(" "+text)
+	}
+	if m.play.active() {
+		return dot(m.toyColor(), m.play.spec.Name)
 	}
 	if !m.state.On {
 		return styleDim.Background(colHearth).Render("○ off")
@@ -226,12 +235,18 @@ func (m Model) liveSummary() string {
 // set their own.
 func (m Model) viewBrightness(selected item, swatch rgb, inner int) string {
 	bg := lipgloss.NewStyle().Background(colHearth).Width(inner)
-	if selected.kind == kindScene && !selected.scene.Dimming {
+	dim := m.dim
+	switch {
+	case m.play.active():
+		dim = max(wiz.MinDimming, m.play.frame.Change.Dimming)
+	case selected.kind == kindToy:
+		return bg.Render(styleDim.Background(colHearth).Render("◉ the toy sets brightness"))
+	case selected.kind == kindScene && !selected.scene.Dimming:
 		return bg.Render(styleDim.Background(colHearth).Render("◉ fixed brightness"))
 	}
 	return bg.Render(styleOrange.Background(colHearth).Render("◉ ") +
-		meter(m.dim, 0, wiz.MaxDimming, inner-8, swatch, colHearth) +
-		styleFg.Background(colHearth).Render(fmt.Sprintf(" %3d%%", m.dim)))
+		meter(dim, 0, wiz.MaxDimming, inner-8, swatch, colHearth) +
+		styleFg.Background(colHearth).Render(fmt.Sprintf(" %3d%%", dim)))
 }
 
 // viewSleep is the card's sleep-timer row: empty until t arms it.
@@ -250,12 +265,18 @@ func (m Model) viewSleep() string {
 func (m Model) viewCard() string {
 	selected := m.selected()
 	swatch := selected.swatch()
+	name, about := selected.name, m.describe(selected)
+	if m.play.active() {
+		swatch, name, about = toyColour[m.play.spec.ID], m.play.spec.Name, m.play.frame.Status
+	}
 	inner := orbCols
 	bg := lipgloss.NewStyle().Background(colHearth)
 	line := func(text string) string { return bg.Width(inner).Render(text) }
 
 	var status string
 	switch {
+	case m.play.active():
+		status = pill("any key stops it", colPit, colGold)
 	case m.busy:
 		status = pill("sending…", colPit, colEmber)
 	case m.pending():
@@ -263,26 +284,44 @@ func (m Model) viewCard() string {
 	default:
 		status = pill("✓ live", colPit, colGreen)
 	}
+	spacer := line("")
+	if m.compact() {
+		spacer = ""
+	}
 	rows := []string{
 		renderOrb(m.shownColor(), m.lit(), m.glow()),
-		line(""),
-		line(colorOf(readable(swatch)).Background(colHearth).Bold(true).Render(selected.name)),
-		line(styleGray.Background(colHearth).Render(m.describe(selected))),
-		line(""),
+		spacer,
+		line(colorOf(readable(swatch)).Background(colHearth).Bold(true).Render(name)),
+		line(styleGray.Background(colHearth).Render(ansi.Truncate(about, inner, "…"))),
+		spacer,
 		m.viewBrightness(selected, swatch, inner),
 		line(styleDim.Background(colHearth).Render("now ") + m.liveSummary()),
-		line(m.viewSleep()),
-		line(""),
-		line(status),
 	}
+	if sleep := m.viewSleep(); sleep != "" || !m.compact() {
+		rows = append(rows, line(sleep))
+	}
+	rows = append(rows, spacer, line(status))
+	rows = slices.DeleteFunc(rows, func(row string) bool { return row == "" })
 	return lipgloss.NewStyle().Background(colHearth).Padding(1, 2).Render(strings.Join(rows, "\n"))
 }
 
-func (m Model) viewTabs() string {
+// compact is true on a short terminal: the card drops its spacer rows so the
+// whole screen still fits.
+func (m Model) compact() bool { return m.height > 0 && m.height < roomyHeight }
+
+// viewTabs lists the tabs, with their sizes when they all fit on one line.
+func (m Model) viewTabs(width int) string {
+	if row := m.tabRow(true); lipgloss.Width(row) <= width {
+		return row
+	}
+	return m.tabRow(false)
+}
+
+func (m Model) tabRow(counts bool) string {
 	var tabs []string
 	for s := range sectionCount {
 		label := s.String()
-		if count := len(m.sections[s]); count > 0 {
+		if count := len(m.sections[s]); counts && count > 0 {
 			label += fmt.Sprintf(" %d", count)
 		}
 		if s == m.section {
@@ -295,7 +334,7 @@ func (m Model) viewTabs() string {
 }
 
 func (m Model) viewBrowser(width int) string {
-	parts := []string{m.viewTabs(), ""}
+	var parts []string
 	if m.section == sectionCustom {
 		parts = append(parts, m.viewCustom(width))
 	} else {
@@ -314,6 +353,9 @@ func (m Model) viewBrowser(width int) string {
 	var hints []string
 	if m.section == sectionFavourites {
 		hints = append(hints, "f  on a preset in any tab pins it here; f here unpins it")
+	}
+	if m.section == sectionToys {
+		hints = append(hints, "enter starts a toy; any key stops it and puts the light back")
 	}
 	if (m.section == sectionFavourites || m.section == sectionMoods) && m.sleep.at.IsZero() {
 		hints = append(hints, "t  sleep timer: dims the light bit by bit, then turns it off")
