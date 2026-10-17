@@ -45,6 +45,12 @@ commands:
   use LIGHT                  make LIGHT the default for commands
   help                       this text
 
+toys (ctrl-c stops and puts the light back):
+  breathe [box|478] [MIN]    the light grows as you breathe in, shrinks as you breathe out
+  party [BPM]                a new colour on every beat, 60-200 bpm (default 120)
+  music                      follows the beat the mic hears
+  dice                       a random colour or scene
+
 LIGHT is a name, an IP address or a MAC. Without -b the default light is used.
 
 setup: firmware 1.34 and later only accepts changes when the WiZ app allows it:
@@ -127,6 +133,10 @@ func run(args []string) error {
 			store.Default = mac
 		}
 		return store.Save()
+	case "breathe", "party", "music":
+		return playToy(client, bulb, command, params)
+	case "dice":
+		return rollDice(ctx, client, store, bulb)
 	}
 
 	change, err := parseChange(ctx, client, bulb, command, params)
